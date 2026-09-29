@@ -8,7 +8,15 @@ from typing import Optional
 from datetime import datetime, timezone
 
 from app.database import get_db
-from app.models.models import User, UserSession, Kitchen, NGO, Driver, SurplusFood
+from app.models.models import (
+    User,
+    UserSession,
+    Kitchen,
+    NGO,
+    Driver,
+    SurplusFood,
+    DemandPrediction,
+)
 from app.config import settings
 
 router = APIRouter(prefix="/api/whatsapp", tags=["WhatsApp"])
@@ -211,6 +219,51 @@ def _handle_kitchen(db: Session, session: UserSession, message: str, media_url: 
                     lines.append(f"• {s.food_name} - {s.quantity} meals ({s.status})")
                 return _send_twiml("\n".join(lines))
         return _send_twiml("No surplus found. Type 'menu' for options.")
+    elif state == "idle" and message == "3":
+        kitchen = db.query(Kitchen).filter(
+            Kitchen.user_id == session.user_id
+        ).first()
+
+        if not kitchen:
+            return _send_twiml(
+                "Kitchen profile not found. Please contact admin."
+            )
+
+        prediction = db.query(DemandPrediction).filter(
+            DemandPrediction.kitchen_id == kitchen.id
+        ).order_by(
+            DemandPrediction.created_at.desc()
+        ).first()
+
+        if not prediction:
+            return _send_twiml(
+                "📊 No prediction available yet.\n\n"
+                "Please generate a demand prediction from the web dashboard first."
+            )
+
+        message_text = (
+            "📊 Demand Prediction\n\n"
+            f"📅 Date: {prediction.prediction_date}\n\n"
+            f"🍽️ Predicted Demand: {prediction.predicted_demand} meals\n"
+            f"🏭 Recommended Production: "
+            f"{prediction.recommended_production} meals\n"
+            f"📈 Historical Average: "
+            f"{prediction.historical_average or 'N/A'} meals\n"
+            f"🛡️ Safety Buffer: {prediction.safety_buffer} meals\n\n"
+            f"🤖 Model: {prediction.model_type}"
+        )
+
+        if (
+            prediction.confidence_lower is not None
+            and prediction.confidence_upper is not None
+        ):
+            message_text += (
+                f"\n\n📌 Expected Range: "
+                f"{prediction.confidence_lower}–"
+                f"{prediction.confidence_upper} meals"
+            )
+
+        return _send_twiml(message_text)
 
     return _send_twiml("Type 'menu' for options.")
 
