@@ -16,7 +16,9 @@ from app.models.models import (
     Driver,
     SurplusFood,
     DemandPrediction,
+    RecipientRequest,
 )
+
 from app.config import settings
 
 router = APIRouter(prefix="/api/whatsapp", tags=["WhatsApp"])
@@ -267,7 +269,150 @@ def _handle_kitchen(db: Session, session: UserSession, message: str, media_url: 
 
     return _send_twiml("Type 'menu' for options.")
 
+def _handle_admin(db: Session, session: UserSession, message: str) -> Response:
+    from app.models.models import (
+        SurplusFood,
+        RecipientRequest,
+        Delivery,
+        User,
+    )
 
+    if message == "1":
+        # System Status
+        total_users = db.query(User).count()
+        total_kitchens = db.query(Kitchen).count()
+        total_ngos = db.query(NGO).count()
+        total_drivers = db.query(Driver).count()
+
+        return _send_twiml(
+            "📊 ResQFood AI System Status\n\n"
+            f"👥 Users: {total_users}\n"
+            f"🍳 Kitchens: {total_kitchens}\n"
+            f"🏢 NGOs: {total_ngos}\n"
+            f"🚗 Drivers: {total_drivers}\n\n"
+            "Type 'menu' for options."
+        )
+
+    elif message == "2":
+        # Active Surplus
+        surplus = db.query(SurplusFood).filter(
+            SurplusFood.status.in_(["eligible", "urgent"])
+        ).order_by(
+            SurplusFood.created_at.desc()
+        ).limit(5).all()
+
+        if not surplus:
+            return _send_twiml(
+                "🍱 No active surplus food currently.\n\n"
+                "Type 'menu' for options."
+            )
+
+        lines = ["🍱 Active Surplus Food\n"]
+
+        for food in surplus:
+            lines.append(
+                f"🔹 #{food.id}\n"
+                f"🍽️ {food.food_name}\n"
+                f"📦 Quantity: {food.quantity} meals\n"
+                f"⏳ Usable: {food.usable_hours} hrs\n"
+                f"📌 Status: {str(food.status).split('.')[-1].upper()}\n"
+            )
+
+        lines.append("Type 'menu' for options.")
+        return _send_twiml("\n".join(lines))
+
+    elif message == "3":
+        # Pending Requests
+        requests = db.query(RecipientRequest).filter(
+            RecipientRequest.status == "pending"
+        ).order_by(
+            RecipientRequest.created_at.desc()
+        ).limit(5).all()
+
+        if not requests:
+            return _send_twiml(
+                "📋 No pending NGO requests.\n\n"
+                "Type 'menu' for options."
+            )
+
+        lines = ["📋 Pending NGO Requests\n"]
+
+        for req in requests:
+            ngo = db.query(NGO).filter(
+                NGO.id == req.ngo_id
+            ).first()
+
+            lines.append(
+                f"🔹 Request #{req.id}\n"
+                f"🏢 NGO: {ngo.name if ngo else 'Unknown'}\n"
+                f"📦 Requested: {req.requested_quantity} meals\n"
+                f"🚨 Urgency: {req.urgency_level}\n"
+            )
+
+        lines.append("Type 'menu' for options.")
+        return _send_twiml("\n".join(lines))
+
+    elif message == "4":
+        # Active Deliveries
+        deliveries = db.query(Delivery).order_by(
+            Delivery.created_at.desc()
+        ).limit(5).all()
+
+        if not deliveries:
+            return _send_twiml(
+                "🚗 No deliveries found.\n\n"
+                "Type 'menu' for options."
+            )
+
+        lines = ["🚗 Recent Deliveries\n"]
+
+        for delivery in deliveries:
+            status = str(delivery.status).split(".")[-1].upper()
+
+            lines.append(
+                f"🔹 Delivery #{delivery.id}\n"
+                f"🍱 Meals: {delivery.total_meals}\n"
+                f"📍 Stops: {delivery.total_stops}\n"
+                f"📌 Status: {status}\n"
+            )
+
+        lines.append("Type 'menu' for options.")
+        return _send_twiml("\n".join(lines))
+
+    elif message == "5":
+        # Quick impact summary
+        from app.models.models import ImpactMetric
+
+        metric = db.query(ImpactMetric).order_by(
+            ImpactMetric.date.desc()
+        ).first()
+
+        if not metric:
+            return _send_twiml(
+                "📈 No impact data available yet.\n\n"
+                "Type 'menu' for options."
+            )
+
+        return _send_twiml(
+            "🌱 ResQFood AI Impact\n\n"
+            f"🍱 Meals Rescued: {metric.meals_rescued}\n"
+            f"⚖️ Food Rescued: {metric.weight_rescued_kg} kg\n"
+            f"🚚 Deliveries: {metric.deliveries_completed}\n"
+            f"👥 Recipients Served: {metric.recipients_served}\n\n"
+            "Type 'menu' for options."
+        )
+
+    return _send_twiml(
+        "👨‍💼 Admin Menu\n\n"
+        "1️⃣ System Status\n"
+        "2️⃣ Active Surplus\n"
+        "3️⃣ Pending Requests\n"
+        "4️⃣ Active Deliveries\n"
+        "5️⃣ Impact Summary\n\n"
+        "Reply with a number."
+    )
+
+ 
 def _handle_ngo(db: Session, session: UserSession, message: str) -> Response:
     if message == "1":
         items = db.query(SurplusFood).filter(
@@ -280,6 +425,55 @@ def _handle_ngo(db: Session, session: UserSession, message: str) -> Response:
             lines.append("\nVisit the website to request food.")
             return _send_twiml("\n".join(lines))
         return _send_twiml("No food available right now. We'll notify you!")
+    elif message == "2":
+        ngo = db.query(NGO).filter(
+            NGO.user_id == session.user_id
+        ).first()
+
+        if not ngo:
+            return _send_twiml(
+                "NGO profile not found. Please contact admin."
+            )
+
+        requests = db.query(RecipientRequest).filter(
+            RecipientRequest.ngo_id == ngo.id
+        ).order_by(
+            RecipientRequest.created_at.desc()
+        ).limit(5).all()
+
+        if not requests:
+            return _send_twiml(
+                "📋 You have no food requests yet.\n\n"
+                "Type 'menu' for options."
+            )
+
+        lines = ["📋 Your Requests:\n"]
+
+        for req in requests:
+            surplus = db.query(SurplusFood).filter(
+                SurplusFood.id == req.surplus_id
+            ).first()
+
+            food_name = surplus.food_name if surplus else "Unknown food"
+            status = str(req.status).split(".")[-1].upper()
+
+            allocated = (
+                req.allocated_quantity
+                if req.allocated_quantity is not None
+                else 0
+            )
+
+            lines.append(
+                f"🔹 Request #{req.id}\n"
+                f"🍱 Food: {food_name}\n"
+                f"📦 Requested: {req.requested_quantity} meals\n"
+                f"✅ Allocated: {allocated} meals\n"
+                f"📌 Status: {status}\n"
+            )
+
+        lines.append("Type 'menu' for options.")
+
+        return _send_twiml("\n".join(lines))
 
     elif message == "3":
         from app.models.models import DeliveryStop, DeliveryOTP
@@ -301,21 +495,98 @@ def _handle_ngo(db: Session, session: UserSession, message: str) -> Response:
     return _send_twiml("Type 'menu' for options.")
 
 
+
 def _handle_driver(db: Session, session: UserSession, message: str) -> Response:
     from app.models.models import Delivery, DeliveryStop
-    driver = db.query(Driver).filter(Driver.user_id == session.user_id).first()
+
+    driver = db.query(Driver).filter(
+        Driver.user_id == session.user_id
+    ).first()
+
     if not driver:
         return _send_twiml("Driver profile not found. Contact admin.")
 
+    # 1️⃣ My deliveries
     if message == "1":
         deliveries = db.query(Delivery).filter(
             Delivery.driver_id == driver.id
-        ).order_by(Delivery.created_at.desc()).limit(3).all()
+        ).order_by(
+            Delivery.created_at.desc()
+        ).limit(3).all()
+
         if deliveries:
             lines = ["🚗 Your Deliveries:\n"]
+
             for d in deliveries:
-                lines.append(f"Delivery #{d.id} - {d.total_meals} meals - {d.status}")
+                status = str(d.status).split(".")[-1].upper()
+
+                lines.append(
+                    f"Delivery #{d.id}\n"
+                    f"🍱 Meals: {d.total_meals}\n"
+                    f"📍 Stops: {d.total_stops}\n"
+                    f"📌 Status: {status}\n"
+                )
+
             return _send_twiml("\n".join(lines))
-        return _send_twiml("No deliveries assigned. Type 'menu' for options.")
+
+        return _send_twiml(
+            "No deliveries assigned. Type 'menu' for options."
+        )
+
+    # 2️⃣ Current route
+    elif message == "2":
+        delivery = db.query(Delivery).filter(
+            Delivery.driver_id == driver.id
+        ).order_by(
+            Delivery.created_at.desc()
+        ).first()
+
+        if not delivery:
+            return _send_twiml(
+                "🚗 No active route found.\n\n"
+                "Type 'menu' for options."
+            )
+
+        stops = db.query(DeliveryStop).filter(
+            DeliveryStop.delivery_id == delivery.id
+        ).order_by(
+            DeliveryStop.sequence_order
+        ).all()
+
+        if not stops:
+            return _send_twiml(
+                f"🚗 Current Route\n\n"
+                f"Delivery #{delivery.id}\n"
+                f"No stops assigned yet."
+            )
+
+        lines = [
+            f"🚗 Current Route\n",
+            f"Delivery #{delivery.id}\n"
+        ]
+
+        for stop in stops:
+            status = str(stop.status).split(".")[-1].upper()
+
+            ngo_name = (
+                stop.ngo.name
+                if stop.ngo
+                else f"NGO #{stop.ngo_id}"
+            )
+
+            lines.append(
+                f"📍 Stop {stop.sequence_order}\n"
+                f"🏢 NGO: {ngo_name}\n"
+                f"🍱 Quantity: {stop.quantity} meals\n"
+                f"📌 Status: {status}\n"
+                f"📍 Address: {stop.address or 'Not available'}\n"
+            )
+
+            if stop.estimated_arrival:
+                lines.append(
+                    f"⏰ ETA: {stop.estimated_arrival}\n"
+                )
+
+        return _send_twiml("\n".join(lines))
 
     return _send_twiml("Type 'menu' for options.")
